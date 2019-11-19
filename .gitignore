@@ -1,0 +1,6 @@
+fluxnet/*
+etl_data/*
+metsim_data/*
+*joblib
+*h5
+*png
