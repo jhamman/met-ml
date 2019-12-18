@@ -4,3 +4,5 @@ metsim_data/*
 *joblib
 *h5
 *png
+dask-worker-space
+__pycache__
