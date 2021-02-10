@@ -11,7 +11,9 @@ import xarray as xr
 from joblib import dump, load
 
 train_vars = ["P", "t_min", "t_max"]
+meta_vars = ["t", "lat", "elev"]
 target_vars = ["SW_IN_F", "LW_IN_F", "PA_F", 'RH']
+predict_vars = train_vars + meta_vars
 read_vars = ["P", "TA_F"] + target_vars
 
 
@@ -77,21 +79,21 @@ sites_to_skip = [
 ]
 
 
-def get_fluxnet(cat, from_cache=True):
+def get_fluxnet(cat, all_site_meta, from_cache=True):
     """load the fluxnet dataset"""
     if not from_cache:
         # use dask to speed things up
-        x_data_computed, y_data_computed, meta = load_fluxnet(cat)
+        fluxnet_df = load_fluxnet(cat, all_site_meta)
 
 #         dump(x_data_computed, "./etl_data/x_data_computed.joblib")
 #         dump(y_data_computed, "./etl_data/y_data_computed.joblib")
 #         dump(meta, "./etl_data/meta.joblib")
     else:
-        x_data_computed = load("./etl_data/x_data_computed.joblib")
-        y_data_computed = load("./etl_data/y_data_computed.joblib")
-        meta = load("./etl_data/meta.joblib")
+        x_data_computed = load("../data/etl/x_data_computed.joblib")
+        y_data_computed = load("../data/etl/y_data_computed.joblib")
+        meta = load("../data/etl/meta.joblib")
 
-    return x_data_computed, y_data_computed, meta
+    return fluxnet_df
 
 
 @dask.delayed
@@ -148,10 +150,11 @@ def make_cyclic_doy(doy):
 
 
 def make_lookback(df, lookback=90):
-    coords = {'features': df.columns}
+    df = df[predict_vars]  # sort columns
+    coords = {'features': predict_vars}
     da = xr.DataArray(df.values, dims=("samples", "features"), coords=coords)
     lba = da.rolling(samples=lookback).construct("lookback")
-    lba.coords['lookback'] = np.linspace(-1 * (lookback -1), 0, num=lookback, dtype=int)
+    lba.coords['lookback'] = np.linspace(-1 * (lookback - 1), 0, num=lookback, dtype=int)
     mask = lba.isnull().any(("lookback", "features"))
     return lba.where(~mask, drop=True).transpose("samples", "lookback", "features")
 
