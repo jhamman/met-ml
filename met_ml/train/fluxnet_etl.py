@@ -14,6 +14,7 @@ train_vars = ["P", "t_min", "t_max"]
 meta_vars = ["t", "lat", "elev"]
 target_vars = ["SW_IN_F", "LW_IN_F", "PA_F", 'RH']
 predict_vars = train_vars + meta_vars
+all_vars = predict_vars + target_vars
 read_vars = ["P", "TA_F"] + target_vars
 
 
@@ -97,13 +98,17 @@ def get_fluxnet(cat, all_site_meta, from_cache=True):
 
 
 @dask.delayed
-def load_fluxnet_site(entry, name):
-    df = entry.read().set_index("TIMESTAMP_START")
-    out = df[["P"]].resample("1D").sum()
-    out["t_min"] = df["TA_F"].resample("1D").min()
-    out["t_max"] = df["TA_F"].resample("1D").max()
-    out[target_vars] = df[target_vars].resample("1D").mean()
-    return out
+def load_fluxnet_site(entry):
+    try:
+        df = entry.read()
+        df.index = pd.to_datetime(df['TIMESTAMP_START'], format='%Y%m%d%H%M')
+        out = df[["P"]].resample("1D").sum()
+        out["t_min"] = df["TA_F"].resample("1D").min()
+        out["t_max"] = df["TA_F"].resample("1D").max()
+        out[target_vars] = df[target_vars].resample("1D").mean()
+        return out
+    except:
+        return None
 
 
 def add_meta(df, meta):
@@ -132,14 +137,18 @@ def load_fluxnet(cat, all_site_meta):
 
     site_data = {}
     for site, site_meta in meta.items():
-        site_data[site] = load_fluxnet_site(cat["subdaily"](site=site), site)
+        site_data[site] = load_fluxnet_site(cat["raw_fullset"](station=site.lower(), kind='fullset', freq='hh'))
 
     site_data = dask.compute(site_data)[0]
 
     out = {}
     var_names = train_vars + target_vars
     for name, df in site_data.items():
-        out[name] = add_meta(df.loc[:, var_names], meta[name])
+
+        if df is not None:
+            out[name] = add_meta(df.loc[:, var_names], meta[name])
+        else:
+            print(f'failed to read {name}, look into this...')
 
     return pd.concat(out.values(), keys=out.keys())
 
@@ -150,8 +159,8 @@ def make_cyclic_doy(doy):
 
 
 def make_lookback(df, lookback=90):
-    df = df[predict_vars]  # sort columns
-    coords = {'features': predict_vars}
+    df = df[all_vars]  # sort columns
+    coords = {'features': all_vars}
     da = xr.DataArray(df.values, dims=("samples", "features"), coords=coords)
     lba = da.rolling(samples=lookback).construct("lookback")
     lba.coords['lookback'] = np.linspace(-1 * (lookback - 1), 0, num=lookback, dtype=int)
