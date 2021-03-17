@@ -173,16 +173,6 @@ def make_cyclic_doy(doy):
     return np.cos((doy - 1) / 365 * 2 * np.pi)
 
 
-def make_lookback(df, lookback=90):
-    df = df[all_vars]  # sort columns
-    coords = {'features': all_vars}
-    da = xr.DataArray(df.values, dims=("samples", "features"), coords=coords)
-    lba = da.rolling(samples=lookback).construct("lookback")
-    lba.coords['lookback'] = np.linspace(-1 * (lookback - 1), 0, num=lookback, dtype=int)
-    mask = lba.isnull().any(("lookback", "features"))
-    return lba.where(~mask, drop=True).transpose("samples", "lookback", "features")
-
-
 def first_entry(entry):
     try:
         return entry.astype(float).values[0]

@@ -1,54 +1,39 @@
-import numpy as np
-import pandas as pd
+import xgboost as xgb
+from sklearn.metrics import mean_squared_error, r2_score
 
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import FunctionTransformer, StandardScaler, MinMaxScaler
+class xgb_model():
+    def __init__(self):
+        self.params = {'objective': 'reg:squarederror'}
+        self.eval_func = {'mse': mean_squared_error, 'r2': r2_score}
+        
+    def fit(self, X_train, y_train, X_test, y_test):
+        # training data 
+        dtrain = xgb.DMatrix(
+            data=X_train.values,
+            label=y_train.values
+        )
+        # val data 
+        dtest = xgb.DMatrix(
+            data=X_test.values,
+            label=y_test.values
+        )
 
+        # specify validations set to watch performance
+        watchlist = [(dtest, 'eval'), (dtrain, 'train')]
+        self.model = xgb.train(params=self.params, 
+                               dtrain=dtrain, 
+                               num_boost_round=200, 
+                               evals=watchlist, 
+                               early_stopping_rounds=10)
 
-def elevation_scaler(x, feature_range=(0, 1), data_range=(-420, 8848)):
-    '''MinMaxScaler for elevations on Earth'''
-    fmin, fmax = feature_range
-    dmin, dmax = data_range
-    scale = (fmax - fmin) / (dmax - dmin)
-    x_scaled = scale * x + fmin - dmin * scale
-    return x_scaled
-
-
-def latitude_scaler(x):
-    return np.sin(np.radians(x))
-
-
-def day_of_year_scaler(x):
-    return np.cos((x - 1) / 365.25 * 2 * np.pi)
-
-
-
-def fit_transformers(dfs):
-    """takes a list of dataframes, returns a fit transformer"""
-    
-    trans = {
-        "P": FunctionTransformer(np.cbrt, validate=False),
-        "elev": FunctionTransformer(elevation_scaler, validate=False),
-        "lat": FunctionTransformer(latitude_scaler, validate=False),
-        "t": FunctionTransformer(day_of_year_scaler, validate=False),
-        "t_min": StandardScaler(),
-        "t_max": StandardScaler(),
-        "SW_IN_F":  MinMaxScaler(),
-        "LW_IN_F": MinMaxScaler(),
-        "PA_F": MinMaxScaler(),
-        "RH": MinMaxScaler(),
-    }
-    
-    df = pd.concat(dfs)
-    
-    transformers = {}
-    for key in df.columns:
-        transformers[key] = trans[key].fit(df[[key]])
-    return transformers
-
-
-def transform_df(transformers, df):
-    out = pd.DataFrame(index=df.index)
-    for key in df:
-        out[key] = transformers[key].transform(df[[key]])
-    return out
+    def predict(X):
+        dtest = xgb.DMatrix(data=X.values)
+        return self.model.predict(dtest, ntree_limit=self.model.best_ntree_limit)
+        
+    def evaluate(X, y):
+        y_pred = self.predict(X)
+        scores = {}
+        for k, func in self.eval_func.items():
+            scores[k] = func(y, y_pred)
+            
+        return scores
