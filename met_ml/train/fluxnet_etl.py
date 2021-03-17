@@ -10,12 +10,12 @@ import pandas as pd
 import xarray as xr
 from joblib import dump, load
 
-train_vars = ["P", "t_min", "t_max"]
-meta_vars = ["t", "lat", "elev"]
+train_vars = ["precip", "t_min", "t_max"]
+meta_vars = ["doy", "lat", "lon", "elev"]
 target_vars = ["SW_IN_F", "LW_IN_F", "PA_F", 'RH']
 predict_vars = train_vars + meta_vars
 all_vars = predict_vars + target_vars
-read_vars = ["P", "TA_F"] + target_vars
+read_vars = ["P_F", "TA_F"] + target_vars
 
 
 # these missing in the metadata and were looked up using google earth
@@ -102,7 +102,13 @@ def load_fluxnet_site(entry):
     try:
         df = entry.read()
         df.index = pd.to_datetime(df['TIMESTAMP_START'], format='%Y%m%d%H%M')
-        out = df[["P"]].resample("1D").sum()
+        
+        # replace negative Precip and Relative humidity to nans 
+        df.loc[df.P_F < 0, 'P_F'] = np.nan 
+        df.loc[((df.RH < 0) | (df.RH > 100)), 'RH'] = np.nan 
+        
+        out = pd.DataFrame()
+        out['precip'] = df["P_F"].resample("1D").sum()
         out["t_min"] = df["TA_F"].resample("1D").min()
         out["t_max"] = df["TA_F"].resample("1D").max()
         out[target_vars] = df[target_vars].resample("1D").mean()
@@ -112,8 +118,9 @@ def load_fluxnet_site(entry):
 
 
 def add_meta(df, meta):
-    df["t"] = df.index.dayofyear  # make_cyclic_doy(df.index.dayofyear)
-    df["lat"] = meta["lat"]  # np.sin(np.radians(meta["lat"]))
+    df["doy"] = df.index.dayofyear
+    df["lat"] = meta["lat"]
+    df["lon"] = meta["lon"]
     df["elev"] = meta["elev"]
     return df
 
@@ -131,16 +138,20 @@ def get_meta(all_site_meta):
 
 def load_fluxnet(cat, all_site_meta):
     """return lists of x and y data"""
-
+    
+    print('getting meta data')
     meta = get_meta(all_site_meta)
     meta_df = pd.DataFrame.from_dict(meta, orient="index")
-
+    
+    print('getting all jobs')
     site_data = {}
     for site, site_meta in meta.items():
         site_data[site] = load_fluxnet_site(cat["raw_fullset"](station=site.lower(), kind='fullset', freq='hh'))
-
+    
+    print('computing')
     site_data = dask.compute(site_data)[0]
 
+    print('prep output')
     out = {}
     var_names = train_vars + target_vars
     for name, df in site_data.items():
@@ -149,8 +160,12 @@ def load_fluxnet(cat, all_site_meta):
             out[name] = add_meta(df.loc[:, var_names], meta[name])
         else:
             print(f'failed to read {name}, look into this...')
+    
+    print('concat')
+    df = pd.concat(out.values(), keys=out.keys())
+    df.index.names = ['Site', 'TIMESTAMP_START']
 
-    return pd.concat(out.values(), keys=out.keys())
+    return df
 
 
 def make_cyclic_doy(doy):
