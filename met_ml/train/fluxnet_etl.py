@@ -12,11 +12,8 @@ from joblib import dump, load
 
 train_vars = ["precip", "t_min", "t_max"]
 meta_vars = ["doy", "lat", "lon", "elev"]
-target_vars = ["SW_IN_F", "LW_IN_F", "PA_F", 'RH']
-predict_vars = train_vars + meta_vars
-all_vars = predict_vars + target_vars
-read_vars = ["P_F", "TA_F"] + target_vars
-
+target_vars = ["SW_IN_F_MDS", "LW_IN_F_MDS", "PA", 'RH']
+era_vars = ['SW_IN_ERA', 'LW_IN_ERA', 'PA_ERA', 'RH_ERA']
 
 # these missing in the metadata and were looked up using google earth
 elevs = {
@@ -97,6 +94,27 @@ def get_fluxnet(cat, all_site_meta, from_cache=True):
     return fluxnet_df
 
 
+def calculate_vp_sat(temp_celsius):
+    """calculates vp_sat in hpa from temp in celsius"""
+    temp_rankine = temp_celsius * 9 / 5 + 491.67
+    A = -1.0440397 * 10**4
+    B = -11.29465
+    C = -2.7022355 * 10**-2
+    D = 1.289036 * 10**-5
+    E = -2.4780681 * 10**-9
+    F = 6.5459673
+    expo = (
+        A / temp_rankine 
+        + B 
+        + C * temp_rankine 
+        + D * temp_rankine ** 2 
+        + E * temp_rankine ** 3
+        + F * np.log(temp_rankine)
+    )
+    vp_sat = np.exp(expo)
+    return vp_sat * 68.9476
+    
+
 @dask.delayed
 def load_fluxnet_site(entry):
     try:
@@ -104,14 +122,20 @@ def load_fluxnet_site(entry):
         df.index = pd.to_datetime(df['TIMESTAMP_START'], format='%Y%m%d%H%M')
         
         # replace negative Precip and Relative humidity to nans 
-        df.loc[df.P_F < 0, 'P_F'] = np.nan 
+        df.replace(-9999, np.nan, inplace=True)
+        df.loc[df.P < 0, 'P'] = np.nan 
         df.loc[((df.RH < 0) | (df.RH > 100)), 'RH'] = np.nan 
         
+        # calculate RH from VPD for ERA data
+        vp_sat = calculate_vp_sat(df.TA_ERA)
+        df['RH_ERA'] = (1 - df.VPD_ERA / vp_sat) * 100.
+
         out = pd.DataFrame()
-        out['precip'] = df["P_F"].resample("1D").sum()
-        out["t_min"] = df["TA_F"].resample("1D").min()
-        out["t_max"] = df["TA_F"].resample("1D").max()
+        out['precip'] = df["P"].resample("1D").sum()
+        out["t_min"] = df["TA_F_MDS"].resample("1D").min()
+        out["t_max"] = df["TA_F_MDS"].resample("1D").max()
         out[target_vars] = df[target_vars].resample("1D").mean()
+        out[era_vars] = df[era_vars].resample('1D').mean()
         return out
     except:
         return None
@@ -153,7 +177,7 @@ def load_fluxnet(cat, all_site_meta):
 
     print('prep output')
     out = {}
-    var_names = train_vars + target_vars
+    var_names = train_vars + target_vars + era_vars
     for name, df in site_data.items():
 
         if df is not None:

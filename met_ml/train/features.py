@@ -26,7 +26,6 @@ def day_of_year_scaler(x):
     return np.cos((x - 1) / 365.25 * 2 * np.pi)
 
 
-
 def fit_transformers(dfs):
     """takes a list of dataframes, returns a fit transformer"""
     
@@ -37,9 +36,9 @@ def fit_transformers(dfs):
         "doy": FunctionTransformer(day_of_year_scaler, validate=False),
         "t_min": StandardScaler(),
         "t_max": StandardScaler(),
-        "SW_IN_F":  MinMaxScaler(),
-        "LW_IN_F": MinMaxScaler(),
-        "PA_F": MinMaxScaler(),
+        "SW_IN":  MinMaxScaler(),
+        "LW_IN": MinMaxScaler(),
+        "PA": MinMaxScaler(),
         "RH": MinMaxScaler(),
     }
     
@@ -67,18 +66,6 @@ def save_transformers(transformers, file_path):
     # TODO: use ONNX for this
     with fsspec.open(file_path, mode='wb') as f:
         dump(transformers, f)
-
-
-def make_lookback(df, variables=None, lookback=90):
-    if not variables:
-        variables = all_vars
-    df = df[variables]  # sort columns
-    coords = {'features': variables}
-    da = xr.DataArray(df.values, dims=("samples", "features"), coords=coords)
-    lba = da.rolling(samples=lookback).construct("lookback")
-    lba.coords['lookback'] = np.linspace(-1 * (lookback - 1), 0, num=lookback, dtype=int)
-    mask = lba.isnull().any(("lookback", "features"))
-    return lba.where(~mask, drop=True).transpose("samples", "lookback", "features")
 
 
 def plot_train_test_sites(train_sites, test_sites):
@@ -134,23 +121,43 @@ def scale_data(train, test):
     return t_train, t_test, transformers
 
 
+def inverse_transform(transformers, df):
+    out = pd.DataFrame(index=df.index)
+    for key in df:
+        out[key] = transformers[key].inverse_transform(df[[key]])
+    return out
+
+
+def make_lookback(df, variables, lookback=90):
+    df = df[variables]  # sort columns
+    coords = {'features': variables}
+    da = xr.DataArray(df.values, dims=("samples", "features"), coords=coords)
+    lba = da.rolling(samples=lookback).construct("lookback")
+    lba.coords['lookback'] = np.linspace(-1 * (lookback - 1), 0, num=lookback, dtype=int)
+    mask = lba.isnull().any(("lookback", "features"))
+    return lba.where(~mask, drop=True).transpose("samples", "lookback", "features")
+
+
 def get_features_and_labels(data, lookback=90, input_is_2D=True): 
     train_vars = ["precip", "t_min", "t_max", "doy", "lat", "elev"]
-    target_vars = ["SW_IN_F", "LW_IN_F", "PA_F", "RH"]
-    all_vars = train_vars + target_vars
+    target_vars = ["SW_IN", "LW_IN", "PA", "RH"]
+    label_vars = ["Site", "TIMESTAMP_START"]
+    all_vars = train_vars + target_vars + label_vars
     
     with_lookback = xr.concat(
         [make_lookback(sub_df, variables=all_vars, lookback=lookback) for site, sub_df in data.groupby('Site')],
         dim="samples",
     )
     
-    X = with_lookback.sel(features=train_vars).chunk({'samples': 10000})
-    y = with_lookback.sel(features=target_vars).isel(lookback=-1).chunk({'samples': 10000})
+    X = with_lookback.sel(features=train_vars).chunk({'samples': 10000}).astype(float)
+    y = with_lookback.sel(features=target_vars).sel(lookback=0).chunk({'samples': 10000}).astype(float)
+    labels = with_lookback.sel(features=label_vars).sel(lookback=0).chunk({'samples': 10000})
     
     assert X.isnull().sum().values == 0
     assert y.isnull().sum().values == 0
+    assert labels.isnull().sum().values == 0
     
     if input_is_2D:
         X = X.stack({'flatten_features': ['features', 'lookback']}).transpose("samples", "flatten_features")
     
-    return X, y
+    return X, y, labels
